@@ -104,6 +104,48 @@ function generateTranslatedSrt(entries, inputFilePath) {
   console.log(`已生成翻译后的 SRT 文件: ${outputFilePath}`);
 }
 
+async function translateBatch(texts) {
+  const endpoint = baseUrl + "/v1/messages";
+  
+  // 将多个句子用换行符连接
+  const combinedText = texts.join('\n');
+  
+  const requestBody = {
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": `
+        These sentences are from a BJJ instructional video,
+        Translate the following sentences into Chinese,
+        Keep the same number of lines in your response.
+        No other redundant information.
+        '${combinedText}'
+        `}
+    ]
+  };
+
+  try {
+    const response = await axios.post(endpoint, requestBody, {
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    let msg = '';
+    if (response.data.content && response.data.content.length > 0) {
+      msg = response.data.content[0].text;
+      // 去除引号并按换行符分割为数组
+      return msg.replace(/"/g, '').split('\n').map(line => line.trim()).filter(line => line);
+    }
+    return new Array(texts.length).fill("");
+  } catch (error) {
+    console.error("翻译错误:", error.message);
+    return new Array(texts.length).fill("");
+  }
+}
+
 /**
  * 主函数：解析 SRT 文件并翻译每条字幕内容，再生成一个新的 SRT 文件
  */
@@ -115,16 +157,26 @@ async function main() {
 
   const filePath = process.argv[2];
   const entries = parseSrtFile(filePath);
-
-  // 遍历每个字幕条目，并翻译 content 字段
-  for (const entry of entries) {
-    console.log(`正在翻译 第${entry.index}条字幕...`);
-    const translated = await translateText(entry.content);
-    entry.translated = translated;
+  // 组合句子的个数，防止请求api过载
+  const entriesGroupNum = 20
+  // 按照3个字幕一组进行批量处理
+  for (let i = 0; i < entries.length; i += entriesGroupNum) {
+    const batch = entries.slice(i, i + entriesGroupNum);
+    const textsToTranslate = batch.map(entry => entry.content);
+    
+    console.log(`正在翻译 第${i + 1}-${Math.min(i + entriesGroupNum, entries.length)}条字幕...`);
+    const translatedTexts = await translateBatch(textsToTranslate);
+    
+    // 将翻译结果分配给对应的字幕条目
+    translatedTexts.forEach((translatedText, index) => {
+      if (batch[index]) {
+        batch[index].translated = translatedText;
+      }
+    });
   }
 
   // 输出包含翻译结果的 JSON
-  console.log(JSON.stringify(entries, null, 2));
+  // console.log(JSON.stringify(entries, null, 2));
 
   // 根据翻译结果生成新的 SRT 文件
   generateTranslatedSrt(entries, filePath);
